@@ -1,60 +1,69 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize: 1024,
+	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
 }
 
-var wsClients = make(map[*websocket.Conn]bool)
+type ChatMessage struct {
+	ChatId   string `json:"ChatId"`
+	PlayerId string `json:"PlayerId"`
+	Data     string `json:"Data"`
+}
+
+var rooms = make(map[string]map[string]*websocket.Conn)
 
 func handleWebsocketClients(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	defer ws.Close()
-
-	wsClients[ws] = true
+	defer conn.Close()
 
 	for {
-		_, receivedMessage, err := ws.ReadMessage()
+		_, receivedMessage, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Println(err)
-			delete(wsClients, ws)
-			break
+			continue
 		}
 
-		msg := string(receivedMessage)
-		fmt.Println(msg)
+		var message ChatMessage
+		json.Unmarshal(receivedMessage, &message)
 
-		for client := range wsClients {
-			if err := client.WriteMessage(websocket.TextMessage, receivedMessage); err != nil {
-				fmt.Println("Failed to broadcast message to one of connected clients")
+		if rooms[message.ChatId] == nil {
+			rooms[message.ChatId] = make(map[string]*websocket.Conn)
+		}
+
+		rooms[message.ChatId][message.PlayerId] = conn
+
+		for playerId, client := range rooms[message.ChatId] {
+			if err := client.WriteMessage(websocket.TextMessage, []byte(message.Data)); err != nil {
+				fmt.Println("Failed to broadcast message to player: ", message.PlayerId)
 				client.Close()
-				delete(wsClients, client)
+				delete(rooms[message.ChatId], playerId)
 			}
+			fmt.Println("Message from chat:", message.ChatId, "broadcasted to client:", playerId)
 		}
-
-		fmt.Println("Iteration complete")
 	}
 }
 
 func main() {
-    fmt.Println("Starting websocket chat...")
+	fmt.Println("Starting websocket chat...")
 
-	http.HandleFunc("/", handleWebsocketClients)
-
+	http.HandleFunc("/ws", handleWebsocketClients)
 	if err := http.ListenAndServe(":8000", nil); err != nil {
 		fmt.Println(err)
 	}
